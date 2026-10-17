@@ -737,7 +737,18 @@ static void cnxt_devfs_unregister_chrdev(unsigned int major,		\
 #endif
 
 #if !defined(FOUND_PM_MESSAGE_T) && !defined(FOUND_PM_MESSAGE_STRUCT)
+/* Astra Linux 1.7 / kernel 6.1 adaptation: the Makefile feature-detection
+ * greps for 'struct pm_message' in <linux/pm.h>, but on Debian/Astra header
+ * packages that file may not be present in the arch-specific tree even though
+ * it is used during compilation (it lives in the -common tree).  Since kernel
+ * 2.6.19 linux/types.h always typedefs pm_message_t, so defining our own
+ * 'typedef u32 pm_message_t' here produces a conflicting-type error.  Use a
+ * version-based fallback in addition to the grep results. */
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,19) )
+#define FOUND_PM_MESSAGE_STRUCT 1
+#else
 typedef u32 pm_message_t;
+#endif
 #endif
 
 #ifdef FOUND_PCI_REGISTER_DRIVER

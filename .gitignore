@@ -1,1 +1,16 @@
+*.o
+*.cmd
 
+# build artifacts
+*.o
+*.O.d
+*.mod
+*.cmd
+.cmd
+.*.cmd
+.*.o.d
+Module.symvers
+modules.order
+.tmp_versions/
+*.ko
+*.symvers

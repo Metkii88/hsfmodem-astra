@@ -25,6 +25,14 @@ ifneq ($(subst powerpc,ppc,$(IMPORTED_ARCH)),$(MACHINE_ARCH))
 $(warning *** WARNING: Trying to compile kernel modules on a $(MACHINE_ARCH) system while the installed $(CNXTTARGET) driver package is for $(IMPORTED_ARCH), this is likely to fail... ***)
 endif
 
+# Astra Linux 1.7 / kernel 6.1 adaptation: kbuild compiles with -nostdinc, but
+# the imported (Linuxant) headers include GCC builtin headers like <stdarg.h>.
+# Add the compiler's builtin include directory explicitly.
+GCC_INCLUDEDIR := $(shell $(CC) -print-file-name=include 2>/dev/null)
+ifneq ($(GCC_INCLUDEDIR),)
+EXTRA_CFLAGS += -I$(GCC_INCLUDEDIR)
+endif
+
 EXTRA_CFLAGS += -I$(IMPORTED)/include -I$(TOP)/modules/include -I$(TOP)/modules/GPL
 EXTRA_CFLAGS += $(IMPORTED_COMPILATION_FLAGS)
 EXTRA_CFLAGS += $(IMPORTED_FRAMEWORK_DEFS) -imacros $(IMPORTED)/include/framewrk.h
@@ -45,9 +53,14 @@ endif
 EXTRA_CFLAGS += -DCNXTLINUXVERSION_NODOT=$(subst .,,$(CNXTLINUXVERSION))
 
 # Configure location of current 2.4 kernel source directory for compiling
-CNXT_KERNELSRC := /lib/modules/$(shell uname -r)/build
+# Astra Linux 1.7 / kernel 6.1 adaptation: allow overriding the kernel build
+# directory from the command line:
+#   make CNXT_KERNELSRC=/lib/modules/<version>/build
+CNXT_KERNELSRC ?= /lib/modules/$(shell uname -r)/build
 
-KERNELSRC_EXISTS := $(shell test -r ${CNXT_KERNELSRC}/include/linux/version.h && echo yes || echo no)
+# Modern kernels (>= 4.x, incl. Astra 1.7's 6.1u7) have no linux/version.h;
+# accept include/generated/compile.h as an alternative "headers exist" marker.
+KERNELSRC_EXISTS := $(shell (test -r ${CNXT_KERNELSRC}/include/linux/version.h || test -r ${CNXT_KERNELSRC}/include/generated/compile.h) && echo yes || echo no)
 
 DEBIAN_SYSTEM := $(shell test -f /etc/debian_version && echo yes || echo no)
 
@@ -57,7 +70,7 @@ CNXT_KERNELSRC := /usr/src/kernel-headers-$(shell uname -r)
 else
 CNXT_KERNELSRC := /usr/src/linux
 endif
-KERNELSRC_EXISTS := $(shell test -r ${CNXT_KERNELSRC}/include/linux/version.h && echo yes || echo no)
+KERNELSRC_EXISTS := $(shell (test -r ${CNXT_KERNELSRC}/include/linux/version.h || test -r ${CNXT_KERNELSRC}/include/generated/compile.h) && echo yes || echo no)
 endif
 
 UTS_FILE := $(shell for hdr in linux/utsrelease.h generated/utsrelease.h linux/version.h; do test -r "${CNXT_KERNELSRC}/include/$${hdr}" && echo "${CNXT_KERNELSRC}/include/$${hdr}" && exit 0; done; exit 1)
@@ -109,6 +122,11 @@ KBUILD_SUPPORTED := $(shell test -e ${CNXT_KERNELSRC}/scripts/kconfig && echo ye
 ifeq ($(KBUILD_SUPPORTED),yes)
 KO= ko
 KBUILD_EXTMOD_SUPPORTED := $(shell egrep -q 'KBUILD_EXTMOD|KERNEL_SOURCE|KERNELSRC' ${CNXT_KERNELSRC}/Makefile 2>/dev/null && echo yes || echo no)
+# Astra Linux 1.7 / kernel 6.1 adaptation: SUBDIRS was removed in kbuild 5.3+,
+# always use M= there.
+ifeq ($(shell test -e ${CNXT_KERNELSRC}/scripts/Kbuild.include && echo yes),yes)
+KBUILD_EXTMOD_SUPPORTED := yes
+endif
 
 FOUND_CLASS_SIMPLE := $(shell grep -q 'class_simple_device_add' ${REAL_KERNELSRC}/include/linux/device.h 2>/dev/null && echo -DFOUND_CLASS_SIMPLE)
 FOUND_UART_REGISTER_PORT := $(shell grep -q 'uart_register_port' ${REAL_KERNELSRC}/include/linux/serial_core.h 2>/dev/null && echo -DFOUND_UART_REGISTER_PORT)
@@ -116,7 +134,12 @@ FOUND_TTY_START_STOP := $(shell grep -q 'stop_tx.*tty_stop' ${REAL_KERNELSRC}/in
 FOUND_CLASS_DEVICE_PARENT := $(shell grep -q 'struct[ \t]*class_device[ \t]*\*[ \t]*parent' ${REAL_KERNELSRC}/include/linux/device.h 2>/dev/null && echo -DFOUND_CLASS_DEVICE_PARENT)
 FOUND_MODULE_PARAM :=  $(shell grep -q 'module_param' ${REAL_KERNELSRC}/include/linux/moduleparam.h 2>/dev/null && echo -DFOUND_MODULE_PARAM)
 FOUND_PM_MESSAGE_T := $(shell grep -q 'pm_message_t' ${REAL_KERNELSRC}/include/linux/pci.h 2>/dev/null && echo -DFOUND_PM_MESSAGE_T)
-FOUND_PM_MESSAGE_STRUCT := $(shell grep -q '^typedef struct pm_message' ${REAL_KERNELSRC}/include/linux/pm.h 2>/dev/null && echo -DFOUND_PM_MESSAGE_STRUCT)
+# Astra Linux 1.7 / kernel 6.1 adaptation: since kernel 3.10 'struct pm_message'
+# is declared in linux/pm.h as 'typedef struct pm_message { ... } pm_message_t;'
+# (the typedef is on the closing brace line), so the old single-line grep never
+# matched and mod_osspec.c ended up with a duplicate/conflicting pm_message_t
+# definition. Match the struct declaration itself instead.
+FOUND_PM_MESSAGE_STRUCT := $(shell grep -q '^struct pm_message' ${REAL_KERNELSRC}/include/linux/pm.h 2>/dev/null && echo -DFOUND_PM_MESSAGE_STRUCT)
 FOUND_PCI_CHOOSE_STATE := $(shell grep -q 'pci_choose_state' ${REAL_KERNELSRC}/include/linux/pci.h 2>/dev/null && echo -DFOUND_PCI_CHOOSE_STATE)
 FOUND_LINUX_SUSPEND := $(shell test -e ${REAL_KERNELSRC}/include/linux/suspend.h && echo -DFOUND_LINUX_SUSPEND)
 FOUND_USB_DRIVER_OWNER := $(shell grep -q 'struct module \*owner' ${REAL_KERNELSRC}/include/linux/usb.h 2>/dev/null && echo -DFOUND_USB_DRIVER_OWNER)

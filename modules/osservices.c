@@ -67,6 +67,56 @@
 #endif
 #endif
 
+/* Astra Linux 1.7 / kernel 6.1 adaptation: modern timer_setup() API,
+ * ktime-based timekeeping (do_gettimeofday removed in 5.x), rdtsc() instead
+ * of the removed rdtscl() macro. */
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0) )
+#include <linux/timekeeping.h>
+#ifndef CNXT_NEW_TIMER_API
+#define CNXT_NEW_TIMER_API 1
+#endif
+#endif
+
+#ifdef CNXT_NEW_TIMER_API
+/* OsCreateTimer() callback pointer is opaque (PVOID cast); with the modern
+ * timer API we must keep it in a typed field and unwrap it in the handler. */
+typedef void (*cnxt_timer_cb_t)(unsigned long data);
+struct cnxt_ktimer {
+    struct timer_list timer;
+    cnxt_timer_cb_t   cb;
+    unsigned long     data;
+};
+static void cnxt_ktimer_handler(struct timer_list *t)
+{
+    struct cnxt_ktimer *kt = from_timer(kt, t, timer);
+    if (kt->cb)
+        kt->cb(kt->data);
+}
+#endif
+
+/* do_gettimeofday() was removed in 5.0; provide a shim based on ktime. */
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0) )
+static inline void cnxt_gettimeofday(struct timeval *tv)
+{
+    struct timespec64 ts;
+    ktime_get_real_ts64(&ts);
+    tv->tv_sec  = (long)ts.tv_sec;
+    tv->tv_usec = (suseconds_t)(ts.tv_nsec / 1000);
+}
+#define do_gettimeofday(tv) cnxt_gettimeofday(tv)
+#endif
+
+/* cpu_khz may not be visible without asm/tsc.h on newer kernels. */
+#ifdef PROCFREQ_FROM_KERNEL
+#include <asm/tsc.h>
+#endif
+
+/* rdtscl() was removed in 3.x; emulate with rdtsc()/rdtscr(). */
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0) ) && !defined(rdtscl)
+#define rdtscl(low)    ((low) = (unsigned int)(u64)rdtsc())
+#define rdtscll(val)   ((val) = (u64)rdtsc())
+#endif
+
 #ifdef for_each_process
 #define sigmask_lock sighand->siglock
 #define recalc_sigpending_curtask(t) recalc_sigpending()
@@ -437,6 +487,14 @@ struct kwork_data {
     void* data;
 };
 
+/* Astra Linux 1.7 / kernel 6.1 adaptation: init_kthread_worker() and
+ * init_kthread_work() were renamed to kthread_init_worker()/kthread_init_work()
+ * in kernel 3.15/4.x; provide compat aliases for the old names. */
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,15,0) )
+#define init_kthread_worker(w)  kthread_init_worker(w)
+#define init_kthread_work(w, f) kthread_init_work(w, f)
+#endif
+
 static void
 OsThreadStart(OSTHRD *osthrd, const char *name, BOOLEAN highestprio)
 {
@@ -698,7 +756,7 @@ static int cnxt_thread(OSTHRD *osthrd)
 				schedule();
 			}
 		}
-		current->state = TASK_RUNNING;
+		__set_current_state(TASK_RUNNING);
 		remove_wait_queue(&osthrd->wq, &wait);
 	}
 
@@ -1028,9 +1086,15 @@ static void TimerThreadFunction(void* pData)
 	OsThreadScheduleDone();
 }
 
+#ifdef CNXT_NEW_TIMER_API
+static void TimeOutHandler(struct timer_list *t)
+{
+    PTIME_OUT_INSTANCE_T	pTimeOutInstance = from_timer(pTimeOutInstance, t, Timer);
+#else
 static void TimeOutHandler(unsigned long Data)
 {
     PTIME_OUT_INSTANCE_T	pTimeOutInstance = (PTIME_OUT_INSTANCE_T)Data;
+#endif
 
     if(test_bit(TASK_DELETE, (void*)&pTimeOutInstance->bLocked)) {
 	return;
@@ -1067,10 +1131,14 @@ HOSTIMER OsCreatePeriodicTimer(IN UINT32 InitialTimeOut, IN PCBFUNC pTimeOutCall
     pTimeOutInstance->bLocked = 0;
     pTimeOutInstance->mSec = InitialTimeOut;
 
+#ifdef CNXT_NEW_TIMER_API
+    timer_setup(&pTimeOutInstance->Timer, TimeOutHandler, 0);
+#else
     init_timer(&pTimeOutInstance->Timer);
 
     pTimeOutInstance->Timer.function = TimeOutHandler;
     pTimeOutInstance->Timer.data = (unsigned long)pTimeOutInstance;
+#endif
     pTimeOutInstance->Timer.expires = jiffies;
 
     if(OsAtomicIncrement(&ntimers) == 1) {
@@ -1187,7 +1255,7 @@ void OsImmediateTimeOut(IN HOSTIMER hTimeOut)
     mod_timer(&pTimeOutInstance -> Timer, jiffies);
 }
 
-static time_t epoch = 0;
+static time64_t epoch = 0;
 
 __shimcall__
 UINT32 OsGetSystemTime(void)
@@ -1245,8 +1313,18 @@ void OsSleep(UINT32 ms)
 typedef struct TIMER_TAG
 {
     UINT32 msec;
+#ifdef CNXT_NEW_TIMER_API
+    struct cnxt_ktimer ktimer;
+#else
     struct timer_list timer;
+#endif
 } TIMER_T, *PTIMER_T;
+
+#ifdef CNXT_NEW_TIMER_API
+#define PTIMER_LIST(p) (&(p)->ktimer.timer)
+#else
+#define PTIMER_LIST(p) (&(p)->timer)
+#endif
 
 __shimcall__
 HANDLE OsCreateTimer(UINT32 msec, __kernelcall__ PVOID pCBFunc, PVOID pRefData)
@@ -1269,10 +1347,17 @@ HANDLE OsCreateTimer(UINT32 msec, __kernelcall__ PVOID pCBFunc, PVOID pRefData)
 
     memset(pTimer,0,sizeof(TIMER_T));
 
+#ifdef CNXT_NEW_TIMER_API
+    timer_setup(PTIMER_LIST(pTimer), cnxt_ktimer_handler, 0);
+    pTimer->ktimer.cb   = (cnxt_timer_cb_t)pCBFunc;
+    pTimer->ktimer.data = (unsigned long)pRefData;
+    PTIMER_LIST(pTimer)->expires = jiffies + MSECS_TO_TICKS(msec);
+#else
     init_timer(&(pTimer->timer));
     pTimer->timer.function = pCBFunc ;
     pTimer->timer.data = (unsigned long)pRefData;
     pTimer->timer.expires = jiffies + MSECS_TO_TICKS(msec);
+#endif
     pTimer->msec = msec;
     return ((HANDLE)pTimer);
 }
@@ -1640,7 +1725,7 @@ void OsEventWait(HOSEVENT hEvent)
 		schedule();
 	}
 
-	current->state = TASK_RUNNING;
+	__set_current_state(TASK_RUNNING);
 	//OsDebugPrintf("TRUN");
 	remove_wait_queue(&pEvent->wq, &wait);
 	//OsDebugPrintf("aft RWQ");
@@ -1716,7 +1801,7 @@ OSEVENT_WAIT_RESULT OsEventWaitTime(HOSEVENT hEvent, UINT32 timeout)
 		//OsDebugPrintf("ST");
 	} while ( tmticks && (tmticks = schedule_timeout(tmticks)) );
 
-	current->state = TASK_RUNNING;
+	__set_current_state(TASK_RUNNING);
 	//OsDebugPrintf("TRUN");
 	remove_wait_queue(&pEvent->wq, &wait);
 	//OsDebugPrintf("aft RWQ");

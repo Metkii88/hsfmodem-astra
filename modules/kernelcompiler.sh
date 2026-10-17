@@ -15,6 +15,23 @@ KERNELSRC="$2"
 
 unset LANG; unset LOCALE; unset LANGUAGE; unset LC_TIME; unset LC_ALL; unset LC_MESSAGES
 
+# Astra Linux 1.7 / kernel 6.1 adaptation: modern kernels (>= 5.x, incl. the
+# 6.1u7 kernel of Astra 1.7) are built with a gcc that is ABI-compatible with
+# the system gcc; the historic "match compiler used to build /proc/version"
+# logic (kgcc/gcc-3.2 era) is obsolete and picks bogus compilers (e.g. "false")
+# on containers/modern distros. If the target kernel is 5.0+, just use gcc.
+kernel_is_modern()
+{
+        case "$1" in
+        *[5-9].*|2[0-9].*) return 0 ;;
+        *) return 1 ;;
+        esac
+}
+if [ -n "$KERNELVER" ] && kernel_is_modern "$KERNELVER"; then
+        echo gcc
+        exit 0
+fi
+
 if [ -n "${RPM_BUILD_ROOT}${DEB_HOST_GNU_SYSTEM}" ]; then
 	if [ -f "${KERNELSRC}/kernelcompiler" ]; then
 		kstr="`cat \"${KERNELSRC}/kernelcompiler\"`"
