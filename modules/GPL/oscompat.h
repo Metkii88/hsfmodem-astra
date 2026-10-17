@@ -576,6 +576,16 @@ static inline int OsContextAllowsSleeping(void)
 #endif
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+/*
+ * Astra Linux 1.7 adaptation: since kernel 5.0 struct device has no
+ * `mode` member anymore (the sysfs uevent mode is taken from the inode),
+ * so devfs_mk_cdev()-style node creation cannot set permissions directly.
+ * The old code paths below that do `d->mode = mode` must not be used.
+ */
+#define CNXT_NO_DEVICE_MODE 1
+#endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 /*
  * Astra Linux 1.7 / kernel 6.1:
@@ -609,6 +619,7 @@ static struct {								\
 	unsigned int major;						\
 	int registered;							\
 	int legacy;							\
+	struct device *devs[CNXTMAXMDMDEV];                \
 } cnxt_devfs_shim;							\
 static int cnxt_devfs_register_chrdev(unsigned int major,		\
 		const char *name, const struct file_operations *fops)	\
@@ -655,11 +666,11 @@ static void cnxt_devfs_mk_cdev(dev_t devnum, umode_t mode,		\
 	typeof(cnxt_devfs_shim) *st = &cnxt_devfs_shim;			\
 	if (!st->registered || !st->class)				\
 		return;							\
-	if (MAJOR(devnum) == st->major) {				\
-		struct device *d = device_create(st->class, NULL,	\
-				devnum, NULL, "%s", name);		\
-		if (!IS_ERR(d))						\
-			d->mode = mode;					\
+	if (MAJOR(devnum) == st->major && MINOR(devnum) < CNXTMAXMDMDEV) { \
+		if (!st->devs[MINOR(devnum)])				\
+			st->devs[MINOR(devnum)] = device_create(  \
+				st->class, NULL, devnum, NULL,	\
+				"%s", name);					\
 	}								\
 }									\
 static void cnxt_devfs_unregister_chrdev(unsigned int major,		\
@@ -669,7 +680,10 @@ static void cnxt_devfs_unregister_chrdev(unsigned int major,		\
 	unsigned int i;							\
 	if (st->registered && st->class) {				\
 		for (i = 0; i < CNXTMAXMDMDEV; i++)			\
-			device_destroy(st->class, MKDEV(st->major, i));	\
+			if (!IS_ERR_OR_NULL(st->devs[i])) {	\
+				device_destroy(st->class, st->devs[i]->devt); \
+				st->devs[i] = NULL;			\
+			}							\
 		cdev_del(&st->cdev);					\
 		unregister_chrdev_region(st->devt, CNXTMAXMDMDEV);	\
 		class_destroy(st->class);				\

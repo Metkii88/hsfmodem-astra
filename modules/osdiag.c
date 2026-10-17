@@ -266,7 +266,13 @@ dmp_read(struct file * file, char * buf, size_t nbytes, loff_t *ppos)
 }
 #endif /* DMP || DMP_RETAIL */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)
+/* Astra Linux 1.7 / kernel 6.1: ->ioctl was removed from struct
+ * file_operations; the unlocked_ioctl handler gets no inode argument. */
+static long diag_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
+#else
 static int diag_ioctl(struct inode* inode, struct file*  file, unsigned int cmd, unsigned long arg)
+#endif
 {
     diag_unit_t *su = file->private_data;
     diag_instance_t *pDiag = su->inst.pDiag;
@@ -611,6 +617,9 @@ static struct file_operations diag_fops = {
     .owner	= THIS_MODULE,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 36)
     .ioctl	= diag_ioctl,
+#else
+    /* Astra Linux 1.7 / kernel 6.1: ->ioctl removed from file_operations */
+    .unlocked_ioctl = diag_ioctl,
 #endif
     .fasync	= diag_fasync,
     .poll	= diag_poll,

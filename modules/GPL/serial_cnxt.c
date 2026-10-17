@@ -981,7 +981,7 @@ static struct uart_driver cnxt_reg = {
 #if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0) )
 static int cnxt_get_hwinst(struct seq_file *s, void *data)
 {
-    struct cnxt_serial_inst *inst = (struct cnxt_serial_inst *)data;
+    struct cnxt_serial_inst *inst = (struct cnxt_serial_inst *)s->private;
     
     // FIXME: Check s->size
     seq_printf(s, "%d-%s\n", inst->devnode->hwInstNum, inst->devnode->hwInstName);
@@ -991,9 +991,24 @@ static int cnxt_get_hwinst(struct seq_file *s, void *data)
 
 static int cnxt_proc_open_hwinst(struct inode *inode, struct file *filp)
 {
-    return single_open(filp, cnxt_get_hwinst, NULL);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+    /* Astra Linux 1.7 / kernel 6.1: proc-data accessor moved to pde_data() */
+    return single_open(filp, cnxt_get_hwinst, PDE_DATA(pde_data(inode)));
+#else
+    return single_open(filp, cnxt_get_hwinst, PDE_DATA(inode));
+#endif
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+/* Astra Linux 1.7 / kernel 6.1: struct proc_ops replaced file_operations
+ * for /proc files; reads go through .proc_read (PRC_READ is gone). */
+static const struct proc_ops cnxt_proc_ops_hwinst = {
+    .proc_open    = cnxt_proc_open_hwinst,
+    .proc_llseek  = seq_lseek,
+    .proc_read    = seq_read,
+    .proc_release = single_release,
+};
+#else
 static const struct file_operations cnxt_proc_ops_hwinst = {
     .owner = THIS_MODULE,
     .open = cnxt_proc_open_hwinst,
@@ -1001,6 +1016,7 @@ static const struct file_operations cnxt_proc_ops_hwinst = {
     .read = seq_read,
     .release = single_release,
 };
+#endif
 
 #else
 static int cnxt_get_hwinst(char *buf, char **start, off_t offset, int length, int *eof, void *data)
@@ -1029,10 +1045,17 @@ static int cnxt_flush_nvm(struct file *file, const char __user *buffer, unsigned
 }
 
 #if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0) )
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+/* Astra Linux 1.7 / kernel 6.1: proc_ops API */
+static const struct proc_ops cnxt_proc_ops_flushnvm = {
+    .proc_write = cnxt_flush_nvm
+};
+#else
 static const struct file_operations cnxt_proc_ops_flushnvm = {
     .owner = THIS_MODULE,
     .write = cnxt_flush_nvm
 };
+#endif
 #endif
 
 
@@ -1441,7 +1464,13 @@ cnxt_serial_init(void)
 	}
 
 #ifdef CONFIG_PROC_FS
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+	/* Astra Linux 1.7 / kernel 6.1: proc_root_driver was removed;
+	 * create the directory at the top level of /proc instead. */
+	cnxt_serial_proc_dir = proc_mkdir(PROC_PREFIX CNXTTARGET, NULL);
+#else
 	cnxt_serial_proc_dir = proc_mkdir(PROC_PREFIX CNXTTARGET, proc_root_driver);
+#endif
 
 	if (cnxt_serial_proc_dir) {
 #if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0) )
@@ -1460,7 +1489,12 @@ cnxt_serial_init(void)
 		if(cnxt_serial_proc_dir) {
 			if (cnxt_serial_flush_nvm)
 				remove_proc_entry("flush_nvm", cnxt_serial_proc_dir);
-			remove_proc_entry(PROC_PREFIX CNXTTARGET, proc_root_driver);
+			remove_proc_entry(PROC_PREFIX CNXTTARGET,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+					  NULL);
+#else
+					  proc_root_driver);
+#endif
 		}
 #endif
 		uart_exit();
@@ -1492,7 +1526,12 @@ cnxt_serial_exit(void)
 	if(cnxt_serial_proc_dir) {
 		if (cnxt_serial_flush_nvm)
 			remove_proc_entry("flush_nvm", cnxt_serial_proc_dir);
-		remove_proc_entry(PROC_PREFIX CNXTTARGET, proc_root_driver);
+		remove_proc_entry(PROC_PREFIX CNXTTARGET,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+				  NULL);
+#else
+				  proc_root_driver);
+#endif
 	}
 #endif
 
